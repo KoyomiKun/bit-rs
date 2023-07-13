@@ -1,16 +1,11 @@
 use anyhow::Result;
 
+use crate::index::Index;
 use crate::meta::LogPos;
 
-pub(crate) trait Indexer: Sync + Send {
-    fn put(&mut self, key: Vec<u8>, pos: LogPos) -> Result<()>;
-    fn get(&self, key: Vec<u8>) -> Result<LogPos>;
-    fn delete(&mut self, key: Vec<u8>) -> Result<()>;
-}
+pub(crate) struct BTreeIndex {}
 
-pub(crate) struct BTreeIndexer {}
-
-impl Indexer for BTreeIndexer {
+impl Index for BTreeIndex {
     fn put(&mut self, key: Vec<u8>, pos: LogPos) -> Result<()> {
         unimplemented!()
     }
@@ -24,7 +19,7 @@ impl Indexer for BTreeIndexer {
     }
 }
 
-impl BTreeIndexer {
+impl BTreeIndex {
     pub(crate) fn new() -> Self {
         Self {}
     }

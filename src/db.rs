@@ -9,7 +9,7 @@ use tokio::fs::read_dir;
 
 use crate::{
     disk::data_file::DataFile,
-    index::{BTreeIndexer, Indexer},
+    index::{btree::BTreeIndex, Index},
     meta::LogPos,
 };
 
@@ -42,10 +42,10 @@ impl Default for Options {
 }
 
 pub struct DB {
-    opts: Options,
+    sync_write: bool,
     active_file: Arc<RwLock<DataFile>>,
     older_files: Arc<RwLock<HashMap<u32, DataFile>>>,
-    index: Box<dyn Indexer>,
+    index: Box<dyn Index>,
 }
 
 impl DB {
@@ -54,32 +54,24 @@ impl DB {
             return Err(anyhow!("invalid options"));
         }
         // read data file
-        if let Some((af, ofs)) = Self::load_data_files(&opts.dir_path)
+        let (af, ofs, idx) = Self::load_data_files(&opts.dir_path, &opts.index_type)
             .await
-            .map_err(|e| anyhow!("load data files failed: {e}"))?
-        {
-            let mut ordered_keys = ofs.keys().collect::<Vec<&u32>>();
-            ordered_keys.sort();
-            let index = Self::load_index_from_data(ordered_keys, &ofs, &af, &opts.index_type)
-                .await
-                .map_err(|e| anyhow!("load index from data failed: {e}"))?;
-            // read index from data files
-            Ok(Self {
-                opts,
-                active_file: Arc::new(RwLock::new(af)),
-                older_files: Arc::new(RwLock::new(ofs)),
-                index,
-            })
-        } else {
-            // if data dir is empty, init db
-            unimplemented!()
-        }
+            .map_err(|e| anyhow!("load data files failed: {e}"))?;
+        return Ok(DB {
+            sync_write: opts.sync_write,
+            active_file: Arc::new(RwLock::new(af)),
+            older_files: Arc::new(RwLock::new(ofs)),
+            index: idx,
+        });
     }
 
-    async fn load_data_files(dir_path: &str) -> Result<Option<Vec>> {
+    async fn load_data_files(
+        dir_path: &str,
+        index_type: &IndexerType,
+    ) -> Result<(DataFile, HashMap<u32, DataFile>, Box<dyn Index>)> {
         let mut dir = read_dir(dir_path).await?;
-        let mut hm = HashMap::new();
-        let mut max_idx = None;
+        let mut dfv = Vec::new();
+
         while let Some(e) = dir.next_entry().await? {
             let filename = e.file_name();
             let filename = filename.to_str().expect("unexpected filename");
@@ -87,61 +79,46 @@ impl DB {
                 continue;
             }
             let file_index = filename.trim_end_matches(".data").parse::<u32>()?;
-            hm.insert(
+            dfv.push((
                 file_index,
                 DataFile::new(&Path::new(dir_path).join(e.file_name())),
-            );
-
-            if max_idx.is_none() {
-                max_idx = Some(file_index);
-                continue;
-            }
-
-            if let Some(lm) = max_idx {
-                if lm < file_index {
-                    max_idx = Some(file_index)
-                }
-            }
+            ));
         }
 
-        if max_idx.is_none() {
-            return Ok(None);
+        // init empty db
+        if dfv.is_empty() {
+            dfv.push((
+                0,
+                DataFile::new(&Path::new(dir_path).join("0000000000.data")),
+            ))
         }
-        Ok(Some((
-            hm.remove(&max_idx.unwrap())
-                .expect("BUG: max_idx not in hashmap"),
-            hm,
-        )))
-    }
 
-    async fn load_index_from_data(
-        ordered_keys: Vec<&u32>,
-        ofs: &HashMap<u32, DataFile>,
-        af: &DataFile,
-        index_type: &IndexerType,
-    ) -> Result<Box<dyn Indexer>> {
-        // read data from old to new
+        // read index
+        dfv.sort_by_key(|(fid, d)| *fid);
         let mut idx = Self::index_type_to_indexer(index_type);
 
-        for fk in ordered_keys {
-            let v = ofs
-                .get(fk)
-                .expect("BUG: get non-existed key from old files");
+        for (fid, d) in &dfv {
             let mut offset = 0;
 
-            while let Some((record, size)) = v.read_log(offset).await? {
-                idx.put(record.key.to_vec(), LogPos { fid: *fk, offset })?;
+            while let Some((record, size)) = d.read_log(offset).await? {
+                idx.put(record.key.to_vec(), LogPos { fid: *fid, offset })?;
                 offset += size;
             }
         }
 
-        // read active file
-        unimplemented!()
+        let active_file = dfv.pop().unwrap().1;
+
+        let old_map = dfv.into_iter().collect::<HashMap<u32, DataFile>>();
+        return Ok((active_file, old_map, idx));
     }
 
-    fn index_type_to_indexer(it: &IndexerType) -> Box<dyn Indexer> {
+    async fn append_log_record(&self) {
+        self.active_file.write().unwrap().;
+    }
+
+    fn index_type_to_indexer(it: &IndexerType) -> Box<dyn Index> {
         match it {
-            IndexerType::BTreeMap => Box::new(BTreeIndexer::new()),
+            IndexerType::BTreeMap => Box::new(BTreeIndex::new()),
             _ => panic!("BUG: invalid indexer pass validation"),
         }
     }
