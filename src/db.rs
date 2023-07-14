@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    path::Path,
     sync::{Arc, RwLock},
 };
 
@@ -10,7 +9,7 @@ use tokio::fs::read_dir;
 use crate::{
     disk::data_file::DataFile,
     index::{btree::BTreeIndex, Index},
-    meta::LogPos,
+    meta::{Fid, LogPos},
 };
 
 pub enum IndexerType {
@@ -43,8 +42,11 @@ impl Default for Options {
 
 pub struct DB {
     sync_write: bool,
+    max_file_size: usize,
+    dir_path: String,
+
     active_file: Arc<RwLock<DataFile>>,
-    older_files: Arc<RwLock<HashMap<u32, DataFile>>>,
+    older_files: Arc<RwLock<HashMap<Fid, DataFile>>>,
     index: Box<dyn Index>,
 }
 
@@ -59,6 +61,8 @@ impl DB {
             .map_err(|e| anyhow!("load data files failed: {e}"))?;
         return Ok(DB {
             sync_write: opts.sync_write,
+            max_file_size: opts.max_file_size,
+            dir_path: opts.dir_path,
             active_file: Arc::new(RwLock::new(af)),
             older_files: Arc::new(RwLock::new(ofs)),
             index: idx,
@@ -68,7 +72,7 @@ impl DB {
     async fn load_data_files(
         dir_path: &str,
         index_type: &IndexerType,
-    ) -> Result<(DataFile, HashMap<u32, DataFile>, Box<dyn Index>)> {
+    ) -> Result<(DataFile, HashMap<Fid, DataFile>, Box<dyn Index>)> {
         let mut dir = read_dir(dir_path).await?;
         let mut dfv = Vec::new();
 
@@ -78,19 +82,13 @@ impl DB {
             if !filename.ends_with(".data") {
                 continue;
             }
-            let file_index = filename.trim_end_matches(".data").parse::<u32>()?;
-            dfv.push((
-                file_index,
-                DataFile::new(&Path::new(dir_path).join(e.file_name())),
-            ));
+            let file_index = filename.trim_end_matches(".data").parse::<Fid>()?;
+            dfv.push((file_index, DataFile::new(dir_path, file_index)));
         }
 
         // init empty db
         if dfv.is_empty() {
-            dfv.push((
-                0,
-                DataFile::new(&Path::new(dir_path).join("0000000000.data")),
-            ))
+            dfv.push((0, DataFile::new(dir_path, 0)))
         }
 
         // read index
@@ -108,12 +106,17 @@ impl DB {
 
         let active_file = dfv.pop().unwrap().1;
 
-        let old_map = dfv.into_iter().collect::<HashMap<u32, DataFile>>();
+        let old_map = dfv.into_iter().collect::<HashMap<Fid, DataFile>>();
         return Ok((active_file, old_map, idx));
     }
 
-    async fn append_log_record(&self) {
-        self.active_file.write().unwrap().;
+    async fn append_log_record(&self) -> Result<()> {
+        let mut f = self.active_file.write().unwrap();
+        if f.current_size().await? > self.max_file_size {
+            f.fsync().await?;
+            *f = DataFile::new(self.dir_path.as_str(), f.fid() + 1);
+        }
+        Ok(())
     }
 
     fn index_type_to_indexer(it: &IndexerType) -> Box<dyn Index> {

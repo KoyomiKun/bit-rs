@@ -1,4 +1,5 @@
-#[derive(Debug)]
+pub(crate) type Fid = u32;
+
 pub(crate) struct LogPos {
     pub(crate) fid: u32,
     pub(crate) offset: usize,
