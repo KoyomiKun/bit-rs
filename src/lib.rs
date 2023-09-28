@@ -1,5 +1,5 @@
 mod db;
 mod disk;
-mod errors;
 mod index;
+mod iter;
 mod meta;

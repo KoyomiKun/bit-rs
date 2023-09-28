@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
@@ -55,15 +55,15 @@ impl<'a> Default for Options<'a> {
     }
 }
 
-pub struct DB<'a> {
+pub struct DB {
     sync_write: bool,
     max_file_size: usize,
-    dir_path: &'a Path,
+    dir_path: PathBuf,
 
     // keep outter ops exclusive
     active_file: Arc<RwLock<DataFile>>,
     older_files: Arc<RwLock<HashMap<Fid, DataFile>>>,
-    index: Box<dyn Index>,
+    pub(crate) index: Box<dyn Index>,
 }
 
 impl<'a> DB<'a> {
